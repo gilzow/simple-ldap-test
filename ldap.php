@@ -1,12 +1,27 @@
 <?php
+/**
+ * Helps troubleshoot LDAP connection/authentication issues
+ * @version 1.0.1
+ */
 
+/**
+ * User account you want to use to try authentication on
+ */
+$strTestUser = 'yourtestuser';
+/**
+ * User's password
+ */
+$strTestPass = 'yourtestuserpassword';
+/**
+ * Items you MUST change
+ */
 $aryRequired = array(
     //account to use for binding
     'bindaccount'   => 'yourbindaccount',
     //bind account password
     'bindpass'      => 'yourbindaccountpassword',
     // ldap server address
-    'ldapserver'   => 'yourtestaccount',
+    'ldapserver'   => 'ldap.domain.com',
     //ldap port
     'ldapport'      => 3268,
     //LDAP domain
@@ -16,7 +31,7 @@ $aryRequired = array(
 );
 
 /**
- * Items you can change.  The defaults are shown.  To use, create an array with these keys and pass in as the second
+ * Items you /can/ change.  The defaults are shown.  To use, create an array with these keys and pass in as the second
  * parameter upon construction of the LDAP_Test object
 
 $aryOptions = array(
@@ -24,6 +39,10 @@ $aryOptions = array(
     'useldap3'          => true,
     // use TLS?
     'starttls'          => true,
+    //uid search filter
+    'uidfilter'         => 'sAMAccountName=',
+    //email filter
+    'emailfilter'       => 'proxyAddresses=smtp:',
     // regex pattern for valid uid, negated
     'uidpattern'        => '/[^A-z0-9@.-]+/',
     // regex pattern for passwords, negated
@@ -34,6 +53,23 @@ $aryOptions = array(
     'passwordmax'       => 26,
 );
  */
+$aryOptions = array();
+
+echo '<h1>Simple LDAP Test</h1>',PHP_EOL,'<p>Trying to authenticate ', $strTestUser,'...</p>',PHP_EOL;
+
+$objMyLdap = new LDAP_Test($aryRequired,$aryOptions);
+
+if($objMyLdap->authSSO($strTestUser,$strTestPass)){
+    echo '<p>',$strTestUser,'authenticated successfully!</p>',PHP_EOL;
+} else {
+    echo '<h2>Authentication failed</h2>',PHP_EOL;
+    if ($objMyLdap->wasErrorEncountered()){
+        echo '<h3>Problem Encountered While Attempting to Authenticate</h3>',PHP_EOL;
+        $objMyLdap->displayErrors();
+    } else {
+        echo '<p>Failed to authenticate user due to invalid credentials</p>',PHP_EOL;
+    }
+}
 
 class LDAP_Test {
     private $aryRequiredKeys = array(
@@ -50,6 +86,8 @@ class LDAP_Test {
         //should be we use LDAP v3?
         'useldap3'          => true,
         'starttls'          => true,
+        'uidfilter'         => 'sAMAccountName=',
+        'emailfilter'       => 'proxyAddresses=smtp:',
         'uidpattern'        => '/[^A-z0-9@.-]+/',
         'passwordpattern'   => '/[^A-z0-9(*&)=?|^}\/_>#:-[\052];]~,\[<.]+/',
         'passwordmin'       => 8,
@@ -57,10 +95,28 @@ class LDAP_Test {
     );
 
     protected $aryOptions = array();
-    
+
     private $aryErrors = array();
 
     protected $rscConnection = null;
+
+    protected $strStartTLSErrorMsg = <<<STARTTLS
+start_tls failed to start. HOWEVER, this does not necessarily mean that there is a problem with your ssl library. 
+Technically, this is the first time the ldap server (%s) has been contacted, so double-check that the server address is 
+correct and is currently reachable. If it is, the next common issue is with TLS_REQCERT in ldap.conf. If the name in the 
+cert doesn't match the name of the domain controller you connected to (e.g. your ldap server address is a round robin to 
+individual domain controllers), start_tls will fail. Another common problem on windows OS is the location of ldap.conf 
+and location of your *.crt files.  If you are running into issues, I <strong>HIGHLY</strong> suggest reading through the 
+user comments at <a href="http://php.net/manual/en/function.ldap-start-tls.php">http://php.net/manual/en/function.ldap-start-tls.php</a>.';        
+STARTTLS;
+
+
+    protected $strLDAPSearchErrMsg = <<<LDAPSEARCHMSG
+problem encountered searching for user %s, using filter <strong>%s</strong> and baseDN <strong>%s</strong>. However, if
+the last LDAP error is <em>Operations error</em> and your LDAP instance allows anonymous binds, but not anonymous searches
+the problem might actually be with your bind account/password.
+LDAPSEARCHMSG;
+
 
     /**
      * LDAP_Test constructor.
@@ -76,32 +132,73 @@ class LDAP_Test {
         } else {
             $this->aryLDAPParams = $aryRequired;
         }
-        
+
         $this->aryOptions = array_merge($this->aryDefaultOptions,$aryOptions);
-        
+
     }
 
     /**
+     * Attempt to authenticate $strUser against ldap using user email to look up user DN
      * @param string $strEmailAddress
      * @param string $strPassword
      * @return bool
      */
     public function authEmail($strEmailAddress,$strPassword)
     {
-        return $this->auth($strEmailAddress,$strPassword,'proxyAddresses=smtp:');
+        return $this->auth($strEmailAddress,$strPassword,$this->aryOptions['emailfilter']);
     }
 
     /**
+     * Attempt to authenticate $strUser against ldap using ssoid/uid to look up user DN
      * @param string $strUser
      * @param string $strPassword
      * @return bool
      */
     public function authSSO($strUser,$strPassword)
     {
-        return $this->auth($strUser,$strPassword,'sAMAccountName=');
+        return $this->auth($strUser,$strPassword,$this->aryOptions['uidfilter']);
     }
 
     /**
+     * Were any errors encountered while attempting to authenticate
+     * @return bool
+     */
+    public function wasErrorEncountered()
+    {
+        return (count($this->aryErrors) > 0) ? true : false;
+    }
+
+    /**
+     * Display the errors that were encountered, if applicable
+     * @return void
+     */
+    public function displayErrors()
+    {
+        if(count($this->aryErrors) > 0){
+            echo '<h3>Errors Encountered</h3>',PHP_EOL,'<ul>',PHP_EOL;
+            foreach ($this->aryErrors as $aryError){
+                echo '<li>',PHP_EOL,'<h4>Error at line ',$aryError['line'],'</h4>',PHP_EOL,'<p>',$aryError['msg'],'</p>',PHP_EOL,'</li>',PHP_EOL;
+            }
+            echo '</ul>',PHP_EOL;
+        } else {
+            echo '<h2>No errors encountered</h2>',PHP_EOL;
+        }
+    }
+
+    /**
+     * @param $strMsg
+     */
+    public function displayStatus($strMsg)
+    {
+        echo '<p>',ucfirst($strMsg),'... success!</p>',PHP_EOL;
+    }
+
+    /**
+     * Attempt to authenticate $strUser using $strFilter to find user DN
+     *
+     * Checks $strUser and $strPassword for empty, checks both against regex patterns, attempts to bind using
+     * bind account, then looks up user DN using $strFilter, then attempts to bind using user DN and $strPassword
+     *
      * @param string $strUser
      * @param string $strPassword
      * @param string $strFilter
@@ -120,6 +217,8 @@ class LDAP_Test {
         if(preg_match($this->aryOptions['uidpattern'],$strUser)){
             $this->recordError('bad uid',__LINE__);
             return false;
+        } else {
+            $this->displayStatus('checking uid against regex pattern');
         }
 
         /**
@@ -133,6 +232,8 @@ class LDAP_Test {
         if(preg_match($this->aryOptions['passwordpattern'],$strPassword) || strlen($strPassword) < $this->aryOptions['passwordmin'] || strlen($strPassword) > $this->aryOptions['passwordmax']){
             $this->recordError('bad password',__LINE__);
             return false;
+        } else {
+            $this->displayStatus('checking user password against regex pattern, min/max lengths');
         }
 
         /**
@@ -141,17 +242,34 @@ class LDAP_Test {
         if(FALSE === $this->rscConnection = ldap_connect($this->aryLDAPParams['ldapserver'],$this->aryLDAPParams['ldapport'])){
             $this->recordError('connection failed',__LINE__);
             return false;
+        } else {
+            $this->displayStatus('setting up initial connection with '.$this->aryLDAPParams['ldapserver']);
         }
+        echo '</p>',PHP_EOL;
 
         //if we want tls we HAVE to use v3
         if($this->aryOptions['useldap3'] || $this->aryOptions['starttls']){
             if(!ldap_set_option($this->rscConnection,LDAP_OPT_PROTOCOL_VERSION,3)){
                 $this->recordError('v3 of ldap protocol not supported',__LINE__);
                 return false;
-            } elseif($this->aryOptions['starttls']){
-                if(!ldap_start_tls($this->rscConnection)){
-                    $this->recordError('start tls failed to start',__LINE__);
-                    return false;
+            } else {
+                /**
+                 * Copes with W2K3/AD issue.
+                 * @see http://bugs.php.net/bug.php?id=30670
+                 * and
+                 * @see http://php.net/manual/en/function.ldap-search.php#45388
+                 *
+                 */
+                ldap_set_option($this->rscConnection,LDAP_OPT_REFERRALS,0);
+                $this->displayStatus('requesting switch to v3 of ldap protocol');
+                if($this->aryOptions['starttls']){
+                    if(!ldap_start_tls($this->rscConnection)){
+
+                        $this->recordError(sprintf($this->strStartTLSErrorMsg,$this->aryLDAPParams['ldapserver']),__LINE__);
+                        return false;
+                    } else {
+                        $this->displayStatus('requesting start_tls');
+                    }
                 }
             }
         }
@@ -159,21 +277,27 @@ class LDAP_Test {
         /**
          * now lets attempt to bind
          */
-        if(!ldap_bind($this->rscConnection,$this->aryLDAPParams['bindaccount'].'@'.$this->aryLDAPParams['addomain'],$this->aryLDAPParams['bindpassword'])){
-            $this->recordError('unable to bind with bind account',__LINE__);
+        if(!ldap_bind($this->rscConnection,$this->aryLDAPParams['bindaccount'].'@'.$this->aryLDAPParams['addomain'],$this->aryLDAPParams['bindpass'])){
+            $this->recordError('unable to bind with bind account ('. $this->aryLDAPParams['bindaccount'] .')',__LINE__);
             return false;
+        } else {
+            $this->displayStatus('attempting to bind with bind account ('. $this->aryLDAPParams['bindaccount'] .')');
         }
 
         $strSearch = $strFilter.$strUser;
 
         if(false === $rscSearchResult = ldap_search($this->rscConnection,$this->aryLDAPParams['basedn'],$strSearch)){
-            $this->recordError('problem encoutered searching for user',__LINE__);
+            $this->recordError(sprintf($this->strLDAPSearchErrMsg,$strUser,$strSearch,$this->aryLDAPParams['basedn']),__LINE__);
             return false;
+        } else {
+            $this->displayStatus('performing search for user using filter <strong>'.$strSearch.'</strong>');
         }
 
         if(false === $rscEntry = ldap_first_entry($this->rscConnection,$rscSearchResult)){
             $this->recordError('problem encountered retrieving search results',__LINE__);
             return false;
+        } else {
+            $this->displayStatus('attempting to retrieve record for search match');
         }
 
         if(empty($rscEntry)){
@@ -184,6 +308,8 @@ class LDAP_Test {
         if(false === $strUserDN = ldap_get_dn($this->rscConnection,$rscEntry)){
             $this->recordError('problem encountered retrieving users DN',__LINE__);
             return false;
+        } else {
+            $this->displayStatus('attempting to retrieve user\'s DN from search match');
         }
 
         /**
@@ -193,8 +319,8 @@ class LDAP_Test {
         $boolReturn = ldap_bind($this->rscConnection,$strUserDN,$strPassword);
         ldap_unbind($this->rscConnection);
 
-        if(false === $boolReturn){
-            $this->recordError('unable to auth user with credentials given',__LINE__);
+        if($boolReturn){
+            $this->displayStatus('attempting to bind with user\'s DN and password');
         }
 
         return $boolReturn;
@@ -202,15 +328,20 @@ class LDAP_Test {
     }
 
     /**
+     * Records an error when encountered
      * @param string $strMessage
      * @param integer $intLine
+     * @return void
      */
     private function recordError($strMessage,$intLine)
     {
         //because the actual problem occurs right after we record it
         $intLine = $intLine - 1;
+        $strLDAPError = ldap_error($this->rscConnection);
+        if(!empty($strLDAPError) && 'Success' !== $strLDAPError){
+            $strMessage .= '. Last LDAP error: ' . $strLDAPError;
+        }
+
         $this->aryErrors[] = array('line'=>$intLine,'msg'=>$strMessage);
     }
 }
-
-$objMyLdap = new LDAP_Test($aryRequired);
