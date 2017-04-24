@@ -246,7 +246,7 @@ LDAPSEARCHMSG;
         if($this->aryOptions['useldaps']){
             $this->aryLDAPParams['ldapserver'] = 'ldaps://' . $this->aryLDAPParams['ldapserver'];
             if(isset($this->aryLDAPParams['ldapport']) && '' != $this->aryLDAPParams['ldapport']){
-                $this->aryLDAPParams['ldapserver'] .= $this->aryLDAPParams['ldapport'];
+                $this->aryLDAPParams['ldapserver'] .= ':'. $this->aryLDAPParams['ldapport'];
             }
         }
 
