@@ -1,7 +1,7 @@
 <?php
 /**
  * Helps troubleshoot LDAP connection/authentication issues
- * @version 1.0.1
+ * @version 1.1.0
  */
 
 /**
@@ -37,6 +37,8 @@ $aryRequired = array(
 $aryOptions = array(
     //should be we use LDAP v3?
     'useldap3'          => true,
+    //Use ldaps instead of tls
+    'useldaps'          => false,
     // use TLS?
     'starttls'          => true,
     //uid search filter
@@ -60,7 +62,7 @@ echo '<h1>Simple LDAP Test</h1>',PHP_EOL,'<p>Trying to authenticate ', $strTestU
 $objMyLdap = new LDAP_Test($aryRequired,$aryOptions);
 
 if($objMyLdap->authSSO($strTestUser,$strTestPass)){
-    echo '<p>',$strTestUser,'authenticated successfully!</p>',PHP_EOL;
+    echo '<p>',$strTestUser,' authenticated successfully!</p>',PHP_EOL;
 } else {
     echo '<h2>Authentication failed</h2>',PHP_EOL;
     if ($objMyLdap->wasErrorEncountered()){
@@ -86,6 +88,7 @@ class LDAP_Test {
         //should be we use LDAP v3?
         'useldap3'          => true,
         'starttls'          => true,
+        'useldaps'          => false,
         'uidfilter'         => 'sAMAccountName=',
         'emailfilter'       => 'proxyAddresses=smtp:',
         'uidpattern'        => '/[^A-z0-9@.-]+/',
@@ -134,6 +137,10 @@ LDAPSEARCHMSG;
         }
 
         $this->aryOptions = array_merge($this->aryDefaultOptions,$aryOptions);
+
+        if($this->aryOptions['starttls'] && $this->aryOptions['useldaps']){
+            throw new ErrorException('You have both starttls and useldaps set to true in the options. I can do one or the other but not both.' );
+        }
 
     }
 
@@ -236,10 +243,27 @@ LDAPSEARCHMSG;
             $this->displayStatus('checking user password against regex pattern, min/max lengths');
         }
 
+        if($this->aryOptions['useldaps']){
+            $this->aryLDAPParams['ldapserver'] = 'ldaps://' . $this->aryLDAPParams['ldapserver'];
+            if(isset($this->aryLDAPParams['ldapport']) && '' != $this->aryLDAPParams['ldapport']){
+                $this->aryLDAPParams['ldapserver'] .= $this->aryLDAPParams['ldapport'];
+            }
+        }
+
+        /*
+         * As of PHP7, if you pass in something other than a valid port number for the port param, you're going to have
+         * a bad time.  And if we're doing ldaps, then the port number is ignored
+         */
+        if($this->aryOptions['useldaps'] || !is_integer($this->aryLDAPParams['ldapport'])){
+            $this->rscConnection = ldap_connect($this->aryLDAPParams['ldapserver']);
+        } else {
+            $this->rscConnection = ldap_connect($this->aryLDAPParams['ldapserver'],$this->aryLDAPParams['ldapport']);
+        }
+
         /**
          * Now let's actually start
          */
-        if(FALSE === $this->rscConnection = ldap_connect($this->aryLDAPParams['ldapserver'],$this->aryLDAPParams['ldapport'])){
+        if(FALSE === $this->rscConnection){
             $this->recordError('connection failed',__LINE__);
             return false;
         } else {
